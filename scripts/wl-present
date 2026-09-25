@@ -143,7 +143,9 @@ mirror-cmd() {
 
 mirror-toplevel() {
     if [[ "$#" -eq 0 || "$1" =~ ^- ]]; then
-        SPEC=$(ask-toplevel)
+        # ask-toplevel's exit only leaves the command substitution, so stop here
+        # too when the menu is cancelled instead of mirroring an empty spec
+        SPEC=$(ask-toplevel) || exit 1
     else
         SPEC="$1"
         shift
@@ -157,6 +159,9 @@ set-output() {
 }
 
 set-toplevel() {
+    # empty when the window menu was cancelled
+    [[ -z "$1" ]] && exit 1
+
     # quote, since window specs may contain spaces ('<app_id> <title>'); the stream
     # parser has no escapes, so pick the quote character the spec doesn't contain
     if [[ "$1" == *"'"* ]]; then
