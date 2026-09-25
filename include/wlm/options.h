@@ -38,6 +38,7 @@ typedef struct ctx_opt {
     bool freeze;
     bool has_region;
     bool fullscreen;
+    bool list_toplevels;
     scale_t scaling;
     scale_filter_t scaling_filter;
     backend_t backend;

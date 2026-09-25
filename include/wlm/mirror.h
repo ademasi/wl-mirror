@@ -12,6 +12,7 @@
 
 struct ctx;
 struct wlm_wayland_output_entry;
+struct wlm_wayland_toplevel_entry;
 
 typedef struct wlm_fallback_backend wlm_fallback_backend_t;
 struct wlm_fallback_backend {
@@ -38,6 +39,8 @@ void wlm_mirror_backend_init(struct ctx * ctx);
 
 void wlm_mirror_output_removed(struct ctx * ctx, struct wlm_wayland_output_entry * node);
 void wlm_mirror_output_added(struct ctx * ctx, struct wlm_wayland_output_entry * node);
+void wlm_mirror_toplevel_removed(struct ctx * ctx, struct wlm_wayland_toplevel_entry * node);
+void wlm_mirror_toplevel_updated(struct ctx * ctx, struct wlm_wayland_toplevel_entry * node);
 void wlm_mirror_update_title(struct ctx * ctx);
 void wlm_mirror_options_updated(struct ctx * ctx);
 

@@ -47,6 +47,13 @@ int main(int argc, char ** argv) {
     wlm_log_debug(&ctx, "main::main(): initializing wayland\n");
     wlm_wayland_init(&ctx);
 
+    if (ctx.opt.list_toplevels) {
+        // the toplevel list is populated during wayland init; no window is ever mapped
+        wlm_wayland_print_toplevels(&ctx);
+        wlm_cleanup(&ctx);
+        return 0;
+    }
+
     wlm_log_debug(&ctx, "main::main(): initializing EGL\n");
     wlm_egl_init(&ctx);
 

@@ -68,14 +68,13 @@ static void on_capture_session_shm_format(void * data, struct ext_image_copy_cap
         backend->has_shm_format = true;
         backend->frame_shm_format = shm_format;
 
-        const wlm_egl_format_t * format = wlm_egl_formats_find_shm(backend->frame_shm_format);
-        if (format == NULL) {
+        if (wlm_egl_formats_find_shm(backend->frame_shm_format) == NULL) {
             wlm_log_error("mirror-extcopy::on_capture_session_shm_format(): failed to find bpp for shm format\n");
             backend_cancel(ctx, backend);
             return;
         }
 
-        backend->frame_shm_stride = backend->frame_width * format->bpp;
+        // the stride is computed on done, once the final buffer size is known
     } else {
         wlm_log_debug(ctx, "mirror-extcopy::on_capture_session_shm_format(): alternate shm_format = %x (ignoring)\n", shm_format);
         return;
@@ -182,6 +181,10 @@ static void on_capture_session_done(void * data, struct ext_image_copy_capture_s
             return;
         }
 
+        // the format was validated when it was received
+        const wlm_egl_format_t * format = wlm_egl_formats_find_shm(backend->frame_shm_format);
+        backend->frame_shm_stride = backend->frame_width * format->bpp;
+
         wlm_wayland_shm_dealloc(ctx);
         bool success = wlm_wayland_shm_alloc(ctx, backend->frame_shm_format, backend->frame_width, backend->frame_height, backend->frame_shm_stride);
 
@@ -195,12 +198,31 @@ static void on_capture_session_done(void * data, struct ext_image_copy_capture_s
         backend->state = STATE_READY;
     }
 
+    // this batch of buffer constraints is consumed; they are re-sent whenever they
+    // change (e.g. every time a mirrored window is resized), so take the first
+    // format of the next batch instead of only the first one ever seen
+    // - the chosen format values stay set for importing captured frames
+    backend->has_shm_format = false;
+    backend->has_drm_format = false;
+
     (void)session;
 }
 
 static void on_capture_session_stopped(void * data, struct ext_image_copy_capture_session_v1 * session) {
     ctx_t * ctx = (ctx_t *)data;
     extcopy_mirror_backend_t * backend = (extcopy_mirror_backend_t *)ctx->mirror.backend;
+
+    if (wlm_mirror_target_get_type(ctx->mirror.current_target) == WLM_MIRROR_TARGET_TYPE_TOPLEVEL) {
+        // expected when the mirrored window closes: recreating the session on the
+        // same source would only be stopped again and exhaust the fail count,
+        // falling back to backends that can't capture toplevels at all
+        // - the toplevel list's closed event then drops the target, and a
+        //   matching window reappearing reinitializes the backend
+        wlm_log_warn("mirror-extcopy::on_capture_session_stopped(): window capture stopped\n");
+        extcopy_session_cleanup(ctx, backend);
+        backend->state = STATE_STOPPED;
+        return;
+    }
 
     wlm_log_error("mirror-extcopy::on_capture_session_stoppped(): capture session closed unexpectedly\n");
     backend_cancel(ctx, backend);
@@ -333,6 +355,23 @@ static void on_capture_frame_failed(void * data, struct ext_image_copy_capture_f
     ctx_t * ctx = (ctx_t *)data;
     extcopy_mirror_backend_t * backend = (extcopy_mirror_backend_t *)ctx->mirror.backend;
 
+    if (reason == EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_BUFFER_CONSTRAINTS) {
+        // not an error: the source changed size (e.g. the mirrored window was
+        // resized) and the session sends new constraints followed by done, which
+        // reallocates the buffer and makes the backend ready again
+        wlm_log_debug(ctx, "mirror-extcopy::on_capture_frame_failed(): buffer constraints changed, waiting for new buffer info\n");
+        ext_image_copy_capture_frame_v1_destroy(backend->capture_frame);
+        backend->capture_frame = NULL;
+        backend->state = STATE_WAIT_BUFFER_INFO;
+        return;
+    }
+
+    if (reason == EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_STOPPED) {
+        // the session's stopped event follows and handles this
+        wlm_log_debug(ctx, "mirror-extcopy::on_capture_frame_failed(): session stopped\n");
+        return;
+    }
+
     wlm_log_error("mirror-extcopy::on_capture_frame_failed(): failed to capture frame, reason = %d\n", reason);
     backend_cancel(ctx, backend);
 
@@ -389,10 +428,19 @@ static void do_capture(ctx_t * ctx) {
         }
 
         ext_image_copy_capture_frame_v1_attach_buffer(backend->capture_frame, buffer);
+
+        // the protocol requires damaging the whole buffer on its first capture and
+        // whenever the client doesn't track damage (we don't); otherwise only
+        // regions changed since the last frame are copied, leaving a freshly
+        // (re)allocated buffer, e.g. after a mirrored window resize, mostly garbage
+        ext_image_copy_capture_frame_v1_damage_buffer(backend->capture_frame, 0, 0, backend->frame_width, backend->frame_height);
+
         ext_image_copy_capture_frame_v1_capture(backend->capture_frame);
         backend->state = STATE_WAIT_READY;
     } else if (backend->state == STATE_WAIT_READY) {
         // nop
+    } else if (backend->state == STATE_STOPPED) {
+        // nop, waiting for a new target
     }
 }
 
@@ -425,8 +473,10 @@ static void wlm_mirror_extcopy_init(ctx_t * ctx, bool use_dmabuf) {
     } else if (ctx->wl.copy_capture_manager == NULL) {
         wlm_log_error("mirror-extcopy::init(): missing ext_image_copy_capture protocol\n");
         return;
-    } else if (ctx->wl.output_capture_source_manager == NULL) {
-        wlm_log_error("mirror-extcopy::init(): missing ext_output_image_capture_source_manager protocol\n");
+    } else if (wlm_mirror_target_get_capture_source(ctx->mirror.current_target) == NULL) {
+        // the source is created with the target, so this also covers a missing
+        // ext_output / ext_foreign_toplevel image capture source manager
+        wlm_log_error("mirror-extcopy::init(): no image capture source for this target\n");
         return;
     }
 

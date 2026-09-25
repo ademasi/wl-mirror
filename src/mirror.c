@@ -73,16 +73,12 @@ void wlm_mirror_init(ctx_t * ctx) {
 
     ctx->mirror.initialized = true;
 
-    // TODO: use wlm_mirror_target_parse
-    // TODO: make wlm_mirror_target_parse implement finding output (or toplevel?) by region
-    // TODO: only find and create target in a single place! (other place is opt parse)
-    // finding target output
-    wlm_wayland_output_entry_t * target_output = NULL;
-    if (!wlm_opt_find_output(ctx, &target_output, &ctx->mirror.current_region)) {
-        wlm_log_error("mirror::init(): failed to find output\n");
+    // finding target output or toplevel
+    ctx->mirror.current_target = wlm_mirror_target_resolve(ctx, &ctx->mirror.current_region);
+    if (ctx->mirror.current_target == NULL) {
+        wlm_log_error("mirror::init(): failed to find capture target\n");
         wlm_exit_fail(ctx);
     }
-    ctx->mirror.current_target = wlm_mirror_target_create_output(ctx, target_output);
 
     // update window title
     wlm_mirror_update_title(ctx);
@@ -212,6 +208,7 @@ void wlm_mirror_output_removed(ctx_t * ctx, wlm_wayland_output_entry_t * node) {
     // cancel capture and clear target; frame callback keeps running but
     // on_frame() skips do_capture() while backend == NULL
     if (ctx->mirror.backend != NULL) ctx->mirror.backend->do_cleanup(ctx);
+    wlm_mirror_target_destroy(ctx->mirror.current_target);
     ctx->mirror.current_target = NULL;
     wlm_mirror_update_title(ctx);
 }
@@ -219,6 +216,7 @@ void wlm_mirror_output_removed(ctx_t * ctx, wlm_wayland_output_entry_t * node) {
 void wlm_mirror_output_added(ctx_t * ctx, wlm_wayland_output_entry_t * node) {
     if (!ctx->mirror.initialized) return;
     if (ctx->mirror.current_target != NULL) return;
+    if (wlm_mirror_target_spec_is_toplevel(ctx->opt.output)) return;
 
     wlm_wayland_output_entry_t * target = NULL;
     region_t region = (region_t){ .x = 0, .y = 0, .width = 0, .height = 0 };
@@ -235,6 +233,44 @@ void wlm_mirror_output_added(ctx_t * ctx, wlm_wayland_output_entry_t * node) {
     ctx->mirror.current_region = region;
     wlm_mirror_backend_init(ctx);
     wlm_mirror_update_title(ctx);
+}
+
+// --- toplevel_removed / toplevel_updated ---
+
+void wlm_mirror_toplevel_removed(ctx_t * ctx, wlm_wayland_toplevel_entry_t * node) {
+    if (!ctx->mirror.initialized) return;
+    if (ctx->mirror.current_target == NULL) return;
+    if (wlm_mirror_target_get_toplevel_node(ctx->mirror.current_target) != node) return;
+
+    wlm_log_warn("mirror::toplevel_removed(): mirrored window closed, waiting for a matching window\n");
+
+    // same as a disappearing output: stop capturing (the last frame stays up with
+    // SHM; with DMA-BUF its buffer is freed and the mirror goes black), and drop
+    // the target before its toplevel entry is freed
+    if (ctx->mirror.backend != NULL) ctx->mirror.backend->do_cleanup(ctx);
+    wlm_mirror_target_destroy(ctx->mirror.current_target);
+    ctx->mirror.current_target = NULL;
+    wlm_mirror_update_title(ctx);
+}
+
+void wlm_mirror_toplevel_updated(ctx_t * ctx, wlm_wayland_toplevel_entry_t * node) {
+    if (!ctx->mirror.initialized) return;
+    if (ctx->mirror.current_target != NULL) return;
+    if (!wlm_mirror_target_spec_is_toplevel(ctx->opt.output)) return;
+
+    // this runs for every toplevel property change while waiting, so look up
+    // quietly instead of through wlm_mirror_target_resolve(), which logs misses
+    const char * spec = ctx->opt.output + strlen(WLM_MIRROR_TARGET_PREFIX_TOPLEVEL);
+    wlm_mirror_target_t * target = wlm_mirror_target_find_toplevel(ctx, spec);
+    if (target == NULL) return;
+
+    wlm_log_debug(ctx, "mirror::toplevel_updated(): matching window appeared, restarting capture\n");
+    ctx->mirror.current_target = target;
+    ctx->mirror.current_region = (region_t){ .x = 0, .y = 0, .width = 0, .height = 0 };
+    wlm_mirror_backend_init(ctx);
+    wlm_mirror_update_title(ctx);
+
+    (void)node;
 }
 
 // --- update_title ---
@@ -270,12 +306,12 @@ static int format_title(ctx_t * ctx, char ** dst, char * fmt) {
     const char * target_name = "";
 
     if (ctx->mirror.initialized && ctx->mirror.current_target != NULL) {
-        // TODO: support for other target types
+        // toplevel targets have a name but no known size
+        target_name = wlm_mirror_target_get_name(ctx->mirror.current_target);
         wlm_wayland_output_entry_t * output_node = wlm_mirror_target_get_output_node(ctx->mirror.current_target);
         if (output_node != NULL) {
             target_width = output_node->width;
             target_height = output_node->height;
-            target_name = output_node->name;
         }
     }
 

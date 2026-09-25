@@ -357,6 +357,9 @@ static void wlm_mirror_screencopy_init(ctx_t * ctx, bool use_dmabuf) {
     } else if (ctx->wl.screencopy_manager == NULL) {
         wlm_log_error("mirror-screencopy::init(): missing wlr_screencopy protocol\n");
         return;
+    } else if (wlm_mirror_target_get_output_node(ctx->mirror.current_target) == NULL) {
+        wlm_log_debug(ctx, "mirror-screencopy::init(): can only capture outputs, skipping\n");
+        return;
     }
 
     // allocate backend context structure

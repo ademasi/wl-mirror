@@ -48,6 +48,17 @@ typedef struct wlm_wayland_seat_entry {
     uint32_t seat_id;
 } wlm_wayland_seat_entry_t;
 
+typedef struct wlm_wayland_toplevel_entry {
+    struct wlm_wayland_toplevel_entry * next;
+    struct ctx * ctx;
+    struct ext_foreign_toplevel_handle_v1 * handle;
+    char * identifier;
+    char * app_id;
+    char * title;
+    // set after the first done event, when all initial properties are known
+    bool initialized;
+} wlm_wayland_toplevel_entry_t;
+
 typedef struct ctx_wl {
     ctx_wl_shm_t shmbuf;
     ctx_wl_dmabuf_t dmabuf;
@@ -90,9 +101,15 @@ typedef struct ctx_wl {
     uint32_t output_capture_source_manager_id;
     uint32_t toplevel_capture_source_manager_id;
 
+    // toplevel list objects
+    // - for toplevel capture targets
+    struct ext_foreign_toplevel_list_v1 * toplevel_list;
+    uint32_t toplevel_list_id;
+
     // output list
     wlm_wayland_output_entry_t * outputs;
     wlm_wayland_seat_entry_t * seats;
+    wlm_wayland_toplevel_entry_t * toplevels;
 
     // surface objects
     struct wl_surface * surface;
@@ -134,6 +151,8 @@ void wlm_wayland_window_set_fullscreen(struct ctx * ctx);
 void wlm_wayland_window_unset_fullscreen(struct ctx * ctx);
 void wlm_wayland_window_update_scale(struct ctx * ctx, double scale, bool is_fractional);
 bool wlm_wayland_find_output(ctx_t * ctx, const char * output_name, wlm_wayland_output_entry_t ** output);
+bool wlm_wayland_find_toplevel(ctx_t * ctx, const char * spec, wlm_wayland_toplevel_entry_t ** toplevel);
+void wlm_wayland_print_toplevels(struct ctx * ctx);
 void wlm_wayland_cleanup(struct ctx * ctx);
 
 #endif

@@ -20,6 +20,7 @@ void wlm_opt_init(ctx_t * ctx) {
     ctx->opt.output = NULL;
     ctx->opt.fullscreen_output = NULL;
     ctx->opt.window_title = NULL;
+    ctx->opt.list_toplevels = false;
 }
 
 void wlm_cleanup_opt(ctx_t * ctx) {
@@ -289,13 +290,13 @@ bool wlm_opt_parse_region(region_t * region, char ** output, const char * region
 }
 
 bool wlm_opt_find_output(ctx_t * ctx, wlm_wayland_output_entry_t ** output_handle, region_t * region_handle) {
-    char * output_name = ctx->opt.output;
+    const char * output_name = wlm_mirror_target_spec_output_name(ctx->opt.output);
     wlm_wayland_output_entry_t * local_output_handle = NULL;
     region_t local_region = (region_t){ .x = 0, .y = 0, .width = 0, .height = 0 };
 
     if (ctx->opt.output != NULL) {
         wlm_log_debug(ctx, "options::find_output(): searching for output by name\n");
-        wlm_wayland_find_output(ctx, ctx->opt.output, &local_output_handle);
+        wlm_wayland_find_output(ctx, output_name, &local_output_handle);
     } else if (ctx->opt.has_region) {
         wlm_log_debug(ctx, "options::find_output(): searching for output by region\n");
         wlm_wayland_output_entry_t * cur = ctx->wl.outputs;
@@ -315,7 +316,7 @@ bool wlm_opt_find_output(ctx_t * ctx, wlm_wayland_output_entry_t ** output_handl
     }
 
     if (local_output_handle == NULL && ctx->opt.output != NULL) {
-        wlm_log_error("options::find_output(): output %s not found\n", ctx->opt.output);
+        wlm_log_error("options::find_output(): output %s not found\n", output_name);
         return false;
     } else if (local_output_handle == NULL && ctx->opt.has_region) {
         wlm_log_error("options::find_output(): output for region not found\n");
@@ -349,11 +350,13 @@ bool wlm_opt_find_output(ctx_t * ctx, wlm_wayland_output_entry_t ** output_handl
 }
 
 void wlm_opt_usage(ctx_t * ctx) {
-    printf("usage: wl-mirror [options] <output>\n");
+    printf("usage: wl-mirror [options] <target>\n");
+    printf("       wl-mirror --list-toplevels\n");
     printf("\n");
     printf("options:\n");
     printf("  -h,   --help                  show this help\n");
     printf("  -V,   --version               print version\n");
+    printf("        --list-toplevels        list mirrorable windows as 'identifier<TAB>app_id<TAB>title' and exit\n");
     printf("  -v,   --verbose               enable debug logging\n");
     printf("        --no-verbose            disable debug logging (default)\n");
     printf("  -c,   --show-cursor           show the cursor on the mirrored screen (default)\n");
@@ -385,9 +388,19 @@ void wlm_opt_usage(ctx_t * ctx) {
     printf("  - screencopy          use the wlr-screencopy-unstable-v1 protocol to capture outputs (auto)\n");
     printf("  - screencopy-dmabuf   use the wlr-screencopy-unstable-v1 protocol to capture outputs (via DMA-BUF)\n");
     printf("  - screencopy-shm      use the wlr-screencopy-unstable-v1 protocol to capture outputs (via SHM)\n");
-    printf("  - extcopy             use the ext-image-copy-capture-v1 protocol to capture outputs (auto)\n");
-    printf("  - extcopy-dmabuf      use the ext-image-copy-capture-v1 protocol to capture outputs (via DMA-BUF)\n");
-    printf("  - extcopy-shm         use the ext-image-copy-capture-v1 protocol to capture outputs (via SHM)\n");
+    printf("  - extcopy             use the ext-image-copy-capture-v1 protocol to capture outputs or toplevels (auto)\n");
+    printf("  - extcopy-dmabuf      use the ext-image-copy-capture-v1 protocol to capture outputs or toplevels (via DMA-BUF)\n");
+    printf("  - extcopy-shm         use the ext-image-copy-capture-v1 protocol to capture outputs or toplevels (via SHM)\n");
+    printf("  toplevel targets can only be captured with extcopy; auto selects it automatically\n");
+    printf("\n");
+    printf("targets:\n");
+    printf("  - <output>            mirror the output with this name or description, e.g. 'eDP-1' (default)\n");
+    printf("  - output:<output>     same as above, explicitly\n");
+    printf("  - toplevel:<spec>     mirror a single window (toplevel), where <spec> is, in order of priority,\n");
+    printf("                        its identifier, its app_id, '<app_id> <title>', or its title\n");
+    printf("                        e.g. 'toplevel:firefox'; see --list-toplevels for the available values\n");
+    printf("  when a mirrored window closes, wl-mirror waits for a window matching <spec> to appear\n");
+    printf("  regions are not supported for toplevel targets\n");
     printf("\n");
     printf("transforms:\n");
     printf("  transforms are specified as a dash-separated list of flips followed by a rotation\n");
@@ -420,6 +433,7 @@ void wlm_opt_usage(ctx_t * ctx) {
     printf("  - {x}, {y}:                        offsets on the screen\n");
     printf("  - {target_width}, {target_height}\n");
     printf("    {target_output}:                 info about the mirrored device\n");
+    printf("                                     (for a toplevel: its app_id; sizes are 0)\n");
     printf("  a few perhaps useful examples:\n");
     printf("    --title 'Wayland Mirror Output {target_output}'\n");
     printf("    --title '{target_output}:{width}x{height}+{x}+{y}'\n");
@@ -450,6 +464,8 @@ void wlm_opt_parse(ctx_t * ctx, int argc, char ** argv) {
             wlm_opt_usage(ctx);
         } else if (strcmp(argv[0], "-V") == 0 || strcmp(argv[0], "--version") == 0) {
             wlm_opt_version(ctx);
+        } else if (is_cli_args && strcmp(argv[0], "--list-toplevels") == 0) {
+            ctx->opt.list_toplevels = true;
         } else if (strcmp(argv[0], "-v") == 0 || strcmp(argv[0], "--verbose") == 0) {
             ctx->opt.verbose = true;
         } else if (strcmp(argv[0], "--no-verbose") == 0) {
@@ -627,7 +643,7 @@ void wlm_opt_parse(ctx_t * ctx, int argc, char ** argv) {
     } else if (new_output && !new_region) {
         // output defined by argument
         ctx->opt.output = arg_output;
-    } else if (!new_output && !new_region && is_cli_args) {
+    } else if (!new_output && !new_region && is_cli_args && !ctx->opt.list_toplevels) {
         // no output or region specified
         wlm_opt_usage(ctx);
     }
@@ -651,16 +667,27 @@ void wlm_opt_parse(ctx_t * ctx, int argc, char ** argv) {
         wlm_wayland_window_unset_fullscreen(ctx);
     }
 
-    wlm_wayland_output_entry_t * target_output = NULL;
-    region_t target_region = (region_t){ .x = 0, .y = 0, .width = 0, .height = 0 };
-    if (!is_cli_args && wlm_opt_find_output(ctx, &target_output, &target_region)) {
-        // TODO: only find and create target in a single place! (other place is mirror init)
-        wlm_mirror_target_destroy(ctx->mirror.current_target);
-        ctx->mirror.current_target = wlm_mirror_target_create_output(ctx, target_output);
-        ctx->mirror.current_region = target_region;
+    // re-resolve the target only when it (or the region selecting it) changed
+    // - recreating it would restart the capture session for unrelated options
+    bool new_target_type = false;
+    if (!is_cli_args && (new_output || new_region)) {
+        region_t target_region = (region_t){ .x = 0, .y = 0, .width = 0, .height = 0 };
+        wlm_mirror_target_t * target = wlm_mirror_target_resolve(ctx, &target_region);
+        if (target != NULL) {
+            wlm_mirror_target_type_t old_type = wlm_mirror_target_get_type(ctx->mirror.current_target);
+            new_target_type = old_type != wlm_mirror_target_get_type(target);
+
+            // stop capturing from the old target before its source is destroyed
+            if (new_target_type && ctx->mirror.backend != NULL) ctx->mirror.backend->do_cleanup(ctx);
+            wlm_mirror_target_destroy(ctx->mirror.current_target);
+            ctx->mirror.current_target = target;
+            ctx->mirror.current_region = target_region;
+        }
     }
 
-    if (!is_cli_args && new_backend) {
+    // switching between outputs and toplevels may need a different backend
+    // (only extcopy can capture toplevels), so pick one again
+    if (!is_cli_args && (new_backend || new_target_type)) {
         wlm_mirror_backend_init(ctx);
     }
 

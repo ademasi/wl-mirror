@@ -293,6 +293,9 @@ void wlm_mirror_export_dmabuf_init(ctx_t * ctx) {
     if (ctx->wl.dmabuf_manager == NULL) {
         wlm_log_error("mirror-export-dmabuf::init(): missing wlr_export_dmabuf_manager protocol\n");
         return;
+    } else if (wlm_mirror_target_get_output_node(ctx->mirror.current_target) == NULL) {
+        wlm_log_debug(ctx, "mirror-export-dmabuf::init(): can only capture outputs, skipping\n");
+        return;
     }
 
     // allocate backend context structure

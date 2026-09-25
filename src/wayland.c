@@ -235,6 +235,142 @@ static const struct zxdg_output_v1_listener xdg_output_listener = {
     .done = on_xdg_output_done
 };
 
+// --- toplevel handle event handlers ---
+
+static void toplevel_entry_destroy(wlm_wayland_toplevel_entry_t * node) {
+    ext_foreign_toplevel_handle_v1_destroy(node->handle);
+    free(node->identifier);
+    free(node->app_id);
+    free(node->title);
+    free(node);
+}
+
+static void set_toplevel_string(char ** field, const char * value) {
+    if (*field != NULL && strcmp(*field, value) == 0) return;
+    free(*field);
+    *field = strdup(value);
+}
+
+static void on_toplevel_handle_closed(
+    void * data, struct ext_foreign_toplevel_handle_v1 * handle
+) {
+    wlm_wayland_toplevel_entry_t * node = (wlm_wayland_toplevel_entry_t *)data;
+    ctx_t * ctx = node->ctx;
+
+    wlm_log_debug(ctx, "wayland::on_toplevel_handle_closed(): toplevel %s (%s) closed\n", node->identifier, node->app_id);
+
+    // notify mirror code before the entry goes away
+    // - drops the capture target if this toplevel was being mirrored
+    wlm_mirror_toplevel_removed(ctx, node);
+
+    // remove toplevel node from linked list
+    wlm_wayland_toplevel_entry_t ** link = &ctx->wl.toplevels;
+    while (*link != NULL && *link != node) link = &(*link)->next;
+    if (*link == node) *link = node->next;
+
+    // the handle is inert after closed, destroy it
+    toplevel_entry_destroy(node);
+
+    (void)handle;
+}
+
+static void on_toplevel_handle_done(
+    void * data, struct ext_foreign_toplevel_handle_v1 * handle
+) {
+    wlm_wayland_toplevel_entry_t * node = (wlm_wayland_toplevel_entry_t *)data;
+    ctx_t * ctx = node->ctx;
+
+    if (!node->initialized) {
+        wlm_log_debug(ctx, "wayland::on_toplevel_handle_done(): toplevel %s added (app_id = %s, title = %s)\n", node->identifier, node->app_id, node->title);
+        node->initialized = true;
+    }
+
+    // notify mirror code of new or changed toplevels
+    // - lets a mirror waiting for its target window pick it up
+    wlm_mirror_toplevel_updated(ctx, node);
+
+    (void)handle;
+}
+
+static void on_toplevel_handle_title(
+    void * data, struct ext_foreign_toplevel_handle_v1 * handle,
+    const char * title
+) {
+    wlm_wayland_toplevel_entry_t * node = (wlm_wayland_toplevel_entry_t *)data;
+    set_toplevel_string(&node->title, title);
+    (void)handle;
+}
+
+static void on_toplevel_handle_app_id(
+    void * data, struct ext_foreign_toplevel_handle_v1 * handle,
+    const char * app_id
+) {
+    wlm_wayland_toplevel_entry_t * node = (wlm_wayland_toplevel_entry_t *)data;
+    set_toplevel_string(&node->app_id, app_id);
+    (void)handle;
+}
+
+static void on_toplevel_handle_identifier(
+    void * data, struct ext_foreign_toplevel_handle_v1 * handle,
+    const char * identifier
+) {
+    wlm_wayland_toplevel_entry_t * node = (wlm_wayland_toplevel_entry_t *)data;
+    set_toplevel_string(&node->identifier, identifier);
+    (void)handle;
+}
+
+static const struct ext_foreign_toplevel_handle_v1_listener toplevel_handle_listener = {
+    .closed = on_toplevel_handle_closed,
+    .done = on_toplevel_handle_done,
+    .title = on_toplevel_handle_title,
+    .app_id = on_toplevel_handle_app_id,
+    .identifier = on_toplevel_handle_identifier,
+};
+
+// --- toplevel list event handlers ---
+
+static void on_toplevel_list_toplevel(
+    void * data, struct ext_foreign_toplevel_list_v1 * list,
+    struct ext_foreign_toplevel_handle_v1 * handle
+) {
+    ctx_t * ctx = (ctx_t *)data;
+
+    // allocate toplevel node
+    wlm_wayland_toplevel_entry_t * node = calloc(1, sizeof (wlm_wayland_toplevel_entry_t));
+    if (node == NULL) {
+        wlm_log_error("wayland::on_toplevel_list_toplevel(): failed to allocate toplevel node\n");
+        wlm_exit_fail(ctx);
+    }
+
+    node->ctx = ctx;
+    node->handle = handle;
+
+    // append toplevel node to toplevel list
+    // - keeps oldest-first order, so the first match for a spec is stable
+    wlm_wayland_toplevel_entry_t ** link = &ctx->wl.toplevels;
+    while (*link != NULL) link = &(*link)->next;
+    *link = node;
+
+    // add toplevel handle event listener
+    // - properties arrive before the first done event
+    ext_foreign_toplevel_handle_v1_add_listener(handle, &toplevel_handle_listener, (void *)node);
+
+    (void)list;
+}
+
+static void on_toplevel_list_finished(
+    void * data, struct ext_foreign_toplevel_list_v1 * list
+) {
+    ctx_t * ctx = (ctx_t *)data;
+    wlm_log_debug(ctx, "wayland::on_toplevel_list_finished(): compositor stopped sending toplevel events\n");
+    (void)list;
+}
+
+static const struct ext_foreign_toplevel_list_v1_listener toplevel_list_listener = {
+    .toplevel = on_toplevel_list_toplevel,
+    .finished = on_toplevel_list_finished,
+};
+
 // --- registry event handlers ---
 
 static void on_registry_add(
@@ -360,6 +496,23 @@ static void on_registry_add(
             registry, id, &ext_foreign_toplevel_image_capture_source_manager_v1_interface, 1
         );
         ctx->wl.toplevel_capture_source_manager_id = id;
+    } else if (strcmp(interface, ext_foreign_toplevel_list_v1_interface.name) == 0) {
+        if (ctx->wl.toplevel_list != NULL) {
+            wlm_log_error("wayland::on_registry_add(): duplicate toplevel_list\n");
+            wlm_exit_fail(ctx);
+        }
+
+        // bind foreign toplevel list object
+        // - for finding toplevel capture targets
+        ctx->wl.toplevel_list = (struct ext_foreign_toplevel_list_v1 *)wl_registry_bind(
+            registry, id, &ext_foreign_toplevel_list_v1_interface, 1
+        );
+        ctx->wl.toplevel_list_id = id;
+
+        // add toplevel list event listener
+        // - for toplevel event
+        // - for finished event
+        ext_foreign_toplevel_list_v1_add_listener(ctx->wl.toplevel_list, &toplevel_list_listener, (void *)ctx);
     } else if (strcmp(interface, wl_shm_interface.name) == 0) {
         if (ctx->wl.shm != NULL) {
             wlm_log_error("wayland::on_registry_add(): duplicate shm\n");
@@ -509,6 +662,9 @@ static void on_registry_remove(
     } else if (id == ctx->wl.toplevel_capture_source_manager_id) {
         wlm_log_error("wayland::on_registry_remove(): toplevel_capture_source_manager disappeared\n");
         wlm_exit_fail(ctx);
+    } else if (id == ctx->wl.toplevel_list_id) {
+        // not fatal: output mirroring doesn't need it, and existing handles stay valid
+        wlm_log_warn("wayland::on_registry_remove(): toplevel_list disappeared, no new toplevels will be found\n");
     } else {
         {
             wlm_wayland_output_entry_t ** link = &ctx->wl.outputs;
@@ -921,7 +1077,7 @@ static bool match_output(wlm_wayland_output_entry_t * node, const char * name) {
     // check if name is equal
     if (node->name != NULL && strcmp(node->name, name) == 0) {
         // matched output name (e.g. 'eDP-1')
-        wlm_log_error("DEBUG: matched output name: %s\n", name);
+        wlm_log_debug(node->ctx, "wayland::match_output():matched output name: %s\n", name);
         return true;
     }
 
@@ -929,7 +1085,7 @@ static bool match_output(wlm_wayland_output_entry_t * node, const char * name) {
     // this is usually make + model + serial on wlroots, but doesn't have to be
     if (node->description != NULL && strcmp(node->description, name) == 0) {
         // matched output description (e.g. 'BOE 0x0BCA Unknown', 'Virtual X11 output via :1')
-        wlm_log_error("DEBUG: matched output description: %s\n", name);
+        wlm_log_debug(node->ctx, "wayland::match_output():matched output description: %s\n", name);
         return true;
     }
 
@@ -938,7 +1094,7 @@ static bool match_output(wlm_wayland_output_entry_t * node, const char * name) {
 
     // don't allow make / model / serial matching for outputs without such info
     if (node->make == NULL && node->model == NULL) {
-        wlm_log_error("DEBUG: can't perform make+model matching\n");
+        wlm_log_debug(node->ctx, "wayland::match_output():can't perform make+model matching\n");
         return false;
     }
 
@@ -946,7 +1102,7 @@ static bool match_output(wlm_wayland_output_entry_t * node, const char * name) {
     const char * name_make = name;
     const char * node_make = node->make ? node->make : "Unknown";
     if (strncmp(node_make, name_make, strlen(node_make)) != 0) {
-        wlm_log_error("DEBUG: failed to match node make: '%s' vs '%s'\n", node_make, name_make);
+        wlm_log_debug(node->ctx, "wayland::match_output():failed to match node make: '%s' vs '%s'\n", node_make, name_make);
         return false;
     }
 
@@ -954,12 +1110,12 @@ static bool match_output(wlm_wayland_output_entry_t * node, const char * name) {
     const char * name_sep = name_make + strlen(node_make);
     if (*name_sep == '\0') {
         // matched output make (e.g. 'BOE', 'Acer', 'Foocorp')
-        wlm_log_error("DEBUG: matched output make: %s\n", name);
+        wlm_log_debug(node->ctx, "wayland::match_output():matched output make: %s\n", name);
         return true;
     }
     if (*name_sep != ' ') {
         // partial match, fail here (e.g. 'Acer 123' vs 'Aceryx 123')
-        wlm_log_error("DEBUG: failed to match node make: '%s' vs '%s' (extra space)\n", node_make, name_make);
+        wlm_log_debug(node->ctx, "wayland::match_output():failed to match node make: '%s' vs '%s' (extra space)\n", node_make, name_make);
         return false;
     }
 
@@ -967,7 +1123,7 @@ static bool match_output(wlm_wayland_output_entry_t * node, const char * name) {
     const char * name_model = name_sep + 1;
     const char * node_model = node->model ? node->model : "Unknown";
     if (strncmp(node_model, name_model, strlen(node_model)) != 0) {
-        wlm_log_error("DEBUG: failed to match node model: '%s' vs '%s'\n", node_model, name_model);
+        wlm_log_debug(node->ctx, "wayland::match_output():failed to match node model: '%s' vs '%s'\n", node_model, name_model);
         return false;
     }
 
@@ -975,12 +1131,12 @@ static bool match_output(wlm_wayland_output_entry_t * node, const char * name) {
     name_sep = name_model + strlen(node_model);
     if (*name_sep == '\0') {
         // matched output make + model (e.g. 'BOE 0x0BCA', 'Acer XB240H', 'Foocorp Foo1')
-        wlm_log_error("DEBUG: matched output make+model: %s\n", name);
+        wlm_log_debug(node->ctx, "wayland::match_output():matched output make+model: %s\n", name);
         return true;
     }
     if (*name_sep != ' ') {
         // partial match, fail here (e.g. 'Acer 123' vs 'Acer 1234')
-        wlm_log_error("DEBUG: failed to match node model: '%s' vs '%s' (extra space)\n", node_model, name_model);
+        wlm_log_debug(node->ctx, "wayland::match_output():failed to match node model: '%s' vs '%s' (extra space)\n", node_model, name_model);
         return false;
     }
 
@@ -988,12 +1144,12 @@ static bool match_output(wlm_wayland_output_entry_t * node, const char * name) {
     const char * name_serial = name_sep + 1;
     const char * node_serial = "Unknown"; // always use 'Unknown'
     if (strcmp(node_serial, name_serial) != 0) {
-        wlm_log_error("DEBUG: failed to match node serial: '%s' vs '%s'\n", node_serial, name_serial);
+        wlm_log_debug(node->ctx, "wayland::match_output():failed to match node serial: '%s' vs '%s'\n", node_serial, name_serial);
         return false;
     }
 
     // matched make + model + "serial" (e.g. 'BOE 0x0BCA Unknown', 'Acer XB240H Unknown')
-    wlm_log_error("DEBUG: matched output make+model+serial: %s\n", name);
+    wlm_log_debug(node->ctx, "wayland::match_output():matched output make+model+serial: %s\n", name);
     return true;
 }
 
@@ -1014,6 +1170,84 @@ bool wlm_wayland_find_output(ctx_t * ctx, const char * output_name, wlm_wayland_
     }
 
     return found;
+}
+
+// --- find_toplevel ---
+
+typedef enum {
+    MATCH_IDENTIFIER,
+    MATCH_APP_ID,
+    MATCH_APP_ID_TITLE,
+    MATCH_TITLE,
+    MATCH_KIND_COUNT,
+} toplevel_match_kind_t;
+
+static bool match_toplevel(wlm_wayland_toplevel_entry_t * node, const char * spec, toplevel_match_kind_t kind) {
+    switch (kind) {
+        case MATCH_IDENTIFIER:
+            return node->identifier != NULL && strcmp(node->identifier, spec) == 0;
+        case MATCH_APP_ID:
+            return node->app_id != NULL && strcmp(node->app_id, spec) == 0;
+        case MATCH_APP_ID_TITLE: {
+            // '{app_id} {title}'
+            if (node->app_id == NULL || node->title == NULL) return false;
+            size_t app_id_len = strlen(node->app_id);
+            return strncmp(spec, node->app_id, app_id_len) == 0
+                && spec[app_id_len] == ' '
+                && strcmp(spec + app_id_len + 1, node->title) == 0;
+        }
+        case MATCH_TITLE:
+            return node->title != NULL && strcmp(node->title, spec) == 0;
+        default:
+            return false;
+    }
+}
+
+bool wlm_wayland_find_toplevel(ctx_t * ctx, const char * spec, wlm_wayland_toplevel_entry_t ** toplevel) {
+    // wl-mirror syntax, most specific first; within a kind the oldest toplevel wins
+    //   match when
+    //     spec == toplevel identifier or
+    //     spec == '{toplevel app_id}' or
+    //     spec == '{toplevel app_id} {toplevel title}' or
+    //     spec == '{toplevel title}'
+    for (int kind = 0; kind < MATCH_KIND_COUNT; kind++) {
+        for (wlm_wayland_toplevel_entry_t * cur = ctx->wl.toplevels; cur != NULL; cur = cur->next) {
+            if (!cur->initialized) continue;
+            if (match_toplevel(cur, spec, (toplevel_match_kind_t)kind)) {
+                wlm_log_debug(ctx, "wayland::find_toplevel(): '%s' matched toplevel %s (app_id = %s, title = %s)\n", spec, cur->identifier, cur->app_id, cur->title);
+                *toplevel = cur;
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+// --- print_toplevels ---
+
+static void print_field(const char * str) {
+    // keep the output one tab-separated line per toplevel
+    for (const char * c = str != NULL ? str : ""; *c != '\0'; c++) {
+        putchar(*c == '\t' || *c == '\n' ? ' ' : *c);
+    }
+}
+
+void wlm_wayland_print_toplevels(ctx_t * ctx) {
+    if (ctx->wl.toplevel_list == NULL) {
+        wlm_log_error("wayland::print_toplevels(): compositor does not support ext_foreign_toplevel_list_v1\n");
+        wlm_exit_fail(ctx);
+    }
+
+    for (wlm_wayland_toplevel_entry_t * cur = ctx->wl.toplevels; cur != NULL; cur = cur->next) {
+        if (!cur->initialized) continue;
+        print_field(cur->identifier);
+        putchar('\t');
+        print_field(cur->app_id);
+        putchar('\t');
+        print_field(cur->title);
+        putchar('\n');
+    }
 }
 
 // --- init_wl ---
@@ -1051,8 +1285,12 @@ void wlm_wayland_init(ctx_t * ctx) {
     ctx->wl.output_capture_source_manager_id = 0;
     ctx->wl.toplevel_capture_source_manager_id = 0;
 
+    ctx->wl.toplevel_list = NULL;
+    ctx->wl.toplevel_list_id = 0;
+
     ctx->wl.outputs = NULL;
     ctx->wl.seats = NULL;
+    ctx->wl.toplevels = NULL;
 
     ctx->wl.surface = NULL;
     ctx->wl.viewport = NULL;
@@ -1116,6 +1354,14 @@ void wlm_wayland_init(ctx_t * ctx) {
     // - expecting add global events for all required protocols
     // - expecting add global events for all outputs
     wl_display_roundtrip(ctx->wl.display);
+
+    // wait for toplevel list events
+    // - binding the list makes the compositor send every existing toplevel,
+    //   each followed by its properties and a done event
+    // - they must be known before a toplevel target can be resolved
+    if (ctx->wl.toplevel_list != NULL) {
+        wl_display_roundtrip(ctx->wl.display);
+    }
 
     // check for missing required protocols
     if (ctx->wl.compositor == NULL) {
@@ -1370,6 +1616,18 @@ void wlm_wayland_cleanup(ctx_t *ctx) {
         ctx->wl.seats = NULL;
     }
 
+    {
+        // free every toplevel in toplevel list
+        wlm_wayland_toplevel_entry_t * cur = ctx->wl.toplevels;
+        while (cur != NULL) {
+            wlm_wayland_toplevel_entry_t * next = cur->next;
+            toplevel_entry_destroy(cur);
+            cur = next;
+        }
+        ctx->wl.toplevels = NULL;
+    }
+
+    if (ctx->wl.toplevel_list != NULL) ext_foreign_toplevel_list_v1_destroy(ctx->wl.toplevel_list);
     if (ctx->wl.copy_capture_manager != NULL) ext_image_copy_capture_manager_v1_destroy(ctx->wl.copy_capture_manager);
     if (ctx->wl.output_capture_source_manager != NULL) ext_output_image_capture_source_manager_v1_destroy(ctx->wl.output_capture_source_manager);
     if (ctx->wl.toplevel_capture_source_manager != NULL) ext_foreign_toplevel_image_capture_source_manager_v1_destroy(ctx->wl.toplevel_capture_source_manager);

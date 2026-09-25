@@ -11,8 +11,10 @@ typedef enum {
     STATE_WAIT_BUFFER_INFO,
     STATE_READY,
     STATE_WAIT_READY,
-    STATE_CANCELED
-    // TODO
+    STATE_CANCELED,
+    // the compositor ended the session because its source went away (e.g. the
+    // mirrored window closed); capture resumes when a new target is set
+    STATE_STOPPED
 } extcopy_state_t;
 
 typedef struct {
