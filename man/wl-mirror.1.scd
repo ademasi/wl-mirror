@@ -6,7 +6,9 @@ wl-mirror - a simple Wayland output mirror client
 
 # SYNOPSIS
 
-*wl-mirror* [-h,-V,-v,-c,-i,-f,-s S,-b B,-t T,-r R,-S] <output>
+*wl-mirror* [-h,-V,-v,-c,-i,-f,-s S,-b B,-t T,-r R,-S] <target>
+
+*wl-mirror* --list-toplevels
 
 # OPTIONS
 
@@ -80,6 +82,11 @@ wl-mirror - a simple Wayland output mirror client
 	Specify a custom title T for the mirror window. This title can contain
 	placeholders, see *TITLE PLACEHOLDERS*
 
+*--list-toplevels*
+	Print the windows (toplevels) that can be mirrored, one per line as
+	'*identifier*<TAB>*app_id*<TAB>*title*', and exit. No window is opened.
+	See *TARGETS*.
+
 # BACKENDS
 
 *auto*
@@ -152,6 +159,30 @@ The following transformation options are provided for compatibility with *sway-o
 *0, 90, 180, 270*
 	Same as *0cw, 90cw, 180cw, 270cw*.
 
+# TARGETS
+
+The positional *target* argument selects what is mirrored:
+
+*<output>*, *output:<output>*
+	An output, matched by name (e.g. 'eDP-1'), description, or
+	'*make* *model* [*serial*]' as in *kanshi*(5) and *sway-output*(5).
+
+*toplevel:<spec>*
+	A single window. *spec* is matched against the windows listed by
+	*--list-toplevels*, in this order of priority: the window's *identifier*,
+	its *app_id*, '*app_id* *title*', or its *title*. Within one kind of match
+	the oldest window wins, e.g. 'toplevel:firefox'.
+
+Toplevel targets require the *ext-foreign-toplevel-list-v1* and
+*ext-foreign-toplevel-image-capture-source-v1* protocols, and can only be
+captured with the *extcopy* backends (*auto* selects them automatically).
+Regions are not supported for toplevel targets.
+
+When the mirrored window is resized, the mirror follows its new size. When it
+closes, *wl-mirror* keeps running and resumes as soon as a window matching
+*spec* appears again. With the *extcopy-shm* backend the last frame stays
+visible meanwhile; with *extcopy-dmabuf* the mirror goes black.
+
 # REGIONS
 
 Regions are specified in the format used by the *slurp*(1) utility:
@@ -173,7 +204,8 @@ In stream mode, *wl-mirror* interprets lines on stdin as additional command line
 - Unquoted arguments are split on whitespace.
 - No escape sequences are implemented.
 
-Option lines on stdin are processed asynchronously, and can override all options and the captured output.
+Option lines on stdin are processed asynchronously, and can override all options and the captured target,
+including switching between an output and a window. If a new target is not found, the current one is kept.
 Stream mode is used by *wl-present*(1) to add interactive controls to *wl-mirror*.
 
 # TITLE PLACEHOLDERS
@@ -183,6 +215,7 @@ The title string supports the following placeholders:
 - {width}, {height}: size of the mirrored area
 - {x}, {y}: offsets on the screen
 - {target_width}, {target_height}, {target_output}: info about the mirrored device
+  (for a window target, {target_output} is its app_id and the sizes are 0)
 
 A few perhaps useful examples:
 

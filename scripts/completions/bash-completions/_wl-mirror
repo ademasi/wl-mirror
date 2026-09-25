@@ -7,6 +7,14 @@ _comp_cmd_wl-mirror_output() {
     fi
 }
 
+_comp_cmd_wl-mirror_target() {
+    local TARGETS=( $(wl-mirror --list-toplevels 2>/dev/null | cut -f2 | sort -u | sed 's/^/toplevel:/') )
+    if [[ "$XDG_CURRENT_DESKTOP" == "sway" ]]; then
+        TARGETS+=( $(swaymsg -t get_outputs | sed -n '/^[[:space:]]*"name":/s/^.*"\([^"]*\)",/\1/p') )
+    fi
+    _comp_compgen -- -W '"${TARGETS[@]}"'
+}
+
 _comp_cmd_wl-mirror_scaling() {
     _comp_compgen -- -W 'fit cover exact linear nearest'
 }
@@ -48,6 +56,7 @@ _comp_cmd_wl-mirror() {
         -r --region --no-region
         -S --stream
         --title
+        --list-toplevels
     )
     local ARG_OPTS=(
         --fullscreen-output
@@ -72,7 +81,7 @@ _comp_cmd_wl-mirror() {
     if [[ $cur == -* ]]; then
         _comp_compgen -- -W '"${OPTS[@]}"'
     else
-        _comp_cmd_wl-mirror_output; return
+        _comp_cmd_wl-mirror_target; return
     fi
 } &&
     complete -F _comp_cmd_wl-mirror wl-mirror

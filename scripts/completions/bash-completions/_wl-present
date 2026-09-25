@@ -12,6 +12,11 @@ _comp_cmd_wl-present_output() {
     fi
 }
 
+_comp_cmd_wl-present_toplevel() {
+    local TOPLEVELS=( $(wl-mirror --list-toplevels 2>/dev/null | cut -f2 | sort -u) )
+    _comp_compgen -- -W '"${TOPLEVELS[@]}"'
+}
+
 _comp_cmd_wl-present_scaling() {
     _comp_compgen -- -W 'fit cover exact linear nearest'
 }
@@ -55,7 +60,9 @@ _comp_cmd_wl-present() {
     local CMDS=(
         help
         mirror
+        mirror-toplevel
         set-output
+        set-toplevel
         set-region unset-region
         set-scaling
         freeze unfreeze toggle-freeze
@@ -65,7 +72,9 @@ _comp_cmd_wl-present() {
     )
     local ARG_CMDS=(
         mirror
+        mirror-toplevel
         set-output
+        set-toplevel
         set-region
         set-scaling
         fullscreen-output
@@ -79,6 +88,7 @@ _comp_cmd_wl-present() {
         -n | --name) _comp_cmd_wl-present_name; return;;
         mirror) _comp_cmd_wl-present_output; return;;
         set-output) _comp_cmd_wl-present_output; return;;
+        mirror-toplevel | set-toplevel) _comp_cmd_wl-present_toplevel; return;;
         set-region) _comp_cmd_wl-present_region; return;;
         set-scaling) _comp_cmd_wl-present_scaling; return;;
         fullscreen-output) _comp_cmd_wl-present_output; return;;

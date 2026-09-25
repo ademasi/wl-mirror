@@ -26,9 +26,20 @@ in your wayland compositor for easy access.
 	used to select the output or region to capture. If any additional OPTIONS
 	are specified, they are passed on to *wl-mirror*.
 
+*mirror-toplevel* [SPEC] [OPTIONS]
+	Start *wl-mirror*(1) capturing a single window, using the target
+	'toplevel:SPEC' (see *TARGETS* in *wl-mirror*(1)). If no SPEC is given, the
+	window is chosen from a menu listing *wl-mirror --list-toplevels*. If any
+	additional OPTIONS are specified, they are passed on to *wl-mirror*.
+
 *set-output* [OUTPUT]
 	Set the captured output of a running *wl-present* session. If no output is
 	given, *slurp*(1) is used to select the output to capture.
+
+*set-toplevel* [SPEC]
+	Switch a running *wl-present* session to capturing a single window. If no
+	SPEC is given, the window is chosen from a menu. *set-output* switches back
+	to an output.
 
 *set-region* [REGION]
 *unset-region*

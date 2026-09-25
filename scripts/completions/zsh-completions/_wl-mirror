@@ -6,6 +6,10 @@ _wl_mirror_outputs() {
     fi
 }
 
+_wl_mirror_toplevels() {
+    wl-mirror --list-toplevels 2>/dev/null | cut -f2 | sort -u | sed 's/^/toplevel:/'
+}
+
 _wl_mirror_transforms() {
     printf '%s\n' normal flipX flipY 0cw 90cw 180cw 270cw 0ccw 90ccw 180ccw 270ccw flipped 0 90 180 270
 }
@@ -19,15 +23,17 @@ _wl_mirror_scalings() {
 }
 
 _wl_mirror() {
-    local -a outputs transforms backends scalings
+    local -a outputs targets transforms backends scalings
     outputs=("${(@f)$(_wl_mirror_outputs)}")
+    targets=($outputs "${(@f)$(_wl_mirror_toplevels)}")
     transforms=("${(@f)$(_wl_mirror_transforms)}")
     backends=("${(@f)$(_wl_mirror_backends)}")
     scalings=("${(@f)$(_wl_mirror_scalings)}")
 
     local -a options
     options=(
-        '1:output:_values "output" $outputs'
+        '1:target:_values "target" $targets'
+        '--list-toplevels[list mirrorable windows and exit]'
         '(-h --help)'{-h,--help}'[show this help]'
         '(-V --version)'{-V,--version}'[print version]'
         '(-v --verbose --no-verbose)'{-v,--verbose}'[enable debug logging]'
@@ -66,7 +72,7 @@ _wl_mirror() {
             _message "  {target_output}"
             ;;
         *)
-            _values "output" $outputs
+            _values "target" $targets
             ;;
     esac
 }

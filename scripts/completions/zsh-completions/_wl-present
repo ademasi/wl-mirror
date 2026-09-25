@@ -6,6 +6,10 @@ _wl_mirror_outputs() {
     fi
 }
 
+_wl_present_toplevels() {
+    wl-mirror --list-toplevels 2>/dev/null | cut -f2 | sort -u
+}
+
 _wl_mirror_transforms() {
     printf '%s\n' normal flipX flipY 0cw 90cw 180cw 270cw 0ccw 90ccw 180ccw 270ccw flipped 0 90 180 270
 }
@@ -37,7 +41,9 @@ _wl_present() {
     commands=(
         'help:show this help'
         'mirror:start wl-mirror on an output'
+        'mirror-toplevel:start wl-mirror on a single window'
         'set-output:set the recorded output'
+        'set-toplevel:set the recorded window'
         'set-region:set the recorded region'
         'unset-region:unset the recorded region'
         'set-scaling:set the scaling mode'
@@ -72,6 +78,11 @@ _wl_present() {
         set-output)
             if (( CURRENT == 2 )); then
                 _values output $outputs
+            fi
+            ;;
+        mirror-toplevel|set-toplevel)
+            if (( CURRENT == 2 )); then
+                _values window "${(@f)$(_wl_present_toplevels)}"
             fi
             ;;
         set-region)
