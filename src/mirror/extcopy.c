@@ -29,6 +29,10 @@ static void extcopy_session_cleanup(ctx_t * ctx, extcopy_mirror_backend_t * back
     extcopy_frame_cleanup(backend);
 
     if (backend->capture_session != NULL) ext_image_copy_capture_session_v1_destroy(backend->capture_session);
+    if (backend->state == STATE_WAIT_BUFFER_ALLOC) {
+        wlm_wayland_dmabuf_cancel_alloc(ctx);
+        wlm_wayland_dmabuf_dealloc(ctx);
+    }
     if (wlm_wayland_dmabuf_get_buffer(ctx) != NULL) wlm_wayland_dmabuf_dealloc(ctx);
     if (wlm_wayland_shm_get_buffer(ctx) != NULL) wlm_wayland_shm_dealloc(ctx);
 
@@ -172,6 +176,8 @@ static void on_capture_session_done(void * data, struct ext_image_copy_capture_s
         }
 
         wlm_log_debug(ctx, "mirror-extcopy::on_capture_session_done(): allocating DMA-BUF\n");
+        if (backend->state == STATE_WAIT_BUFFER_ALLOC) wlm_wayland_dmabuf_cancel_alloc(ctx);
+        backend->state = STATE_WAIT_BUFFER_ALLOC;
         wlm_wayland_dmabuf_dealloc(ctx);
         wlm_wayland_dmabuf_alloc(ctx, backend->frame_drm_format, backend->frame_width, backend->frame_height, backend->frame_drm_modifiers, backend->frame_num_drm_modifiers, on_dmabuf_allocated);
     } else {
